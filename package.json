@@ -1,0 +1,24 @@
+{
+  "name": "hive-pulse-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Hive Pulse backend — Jira ingest → MongoDB → deterministic scoring agents → live dashboard API (Express + SSE)",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "seed": "node src/scripts/writeSeed.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "mongodb": "^6.10.0",
+    "node-cron": "^3.0.3"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.32.1"
+  }
+}

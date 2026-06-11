@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "src/handler.js", "use": "@vercel/node" }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "src/handler.js" }
+  ],
+  "crons": [
+    { "path": "/api/ingest", "schedule": "*/5 * * * *" }
+  ]
+}
