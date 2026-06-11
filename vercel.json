@@ -7,6 +7,6 @@
     { "src": "/(.*)", "dest": "src/handler.js" }
   ],
   "crons": [
-    { "path": "/api/ingest", "schedule": "*/5 * * * *" }
+    { "path": "/api/ingest", "schedule": "0 8 * * *" }
   ]
 }
