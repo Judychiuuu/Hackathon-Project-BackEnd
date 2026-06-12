@@ -35,6 +35,7 @@ export function createServer({ onManualIngest }) {
     res.json({ ok: true, source: snapshot?.source ?? config.dataSource, lastIngestAt, hash: snapshot?.hash ?? null, clients: clients.size })
   })
 
+
   app.get('/api/snapshot', (_req, res) => {
     if (!snapshot) return res.status(503).json({ error: 'warming up' })
     res.json(snapshot)

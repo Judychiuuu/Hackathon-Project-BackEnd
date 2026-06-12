@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { config } from './config.js'
 import { log } from './lib/log.js'
-import { connectMongo } from './db/mongo.js'
+import { connectMongo, getLatestSnapshot } from './db/mongo.js'
 import { createServer } from './server.js'
 import { runIngest } from './ingest/runIngest.js'
 
@@ -35,14 +35,20 @@ function getApp() {
         return s
       },
     })
-    // Load frozen seed immediately so /api/snapshot never returns 503.
-    try {
-      const seed = JSON.parse(await readFile(SEED_PATH, 'utf8'))
-      setSnapshot(seed)
-      log.info(`seed loaded hash=${seed.hash}`)
-    } catch {
-      // No seed? Run a live ingest to populate.
-      try { const s = await runIngest(); setSnapshot(s) } catch (e) { log.warn('ingest on init failed:', e.message) }
+    // Bootstrap order: MongoDB latest → seed.json fallback → live ingest.
+    // MongoDB survives across Vercel instances; seed.json is the static backstop.
+    const mongoSnap = await getLatestSnapshot()
+    if (mongoSnap) {
+      setSnapshot(mongoSnap)
+      log.info(`mongo snapshot loaded hash=${mongoSnap.hash} source=${mongoSnap.source}`)
+    } else {
+      try {
+        const seed = JSON.parse(await readFile(SEED_PATH, 'utf8'))
+        setSnapshot(seed)
+        log.info(`seed loaded hash=${seed.hash}`)
+      } catch {
+        try { const s = await runIngest(); setSnapshot(s) } catch (e) { log.warn('ingest on init failed:', e.message) }
+      }
     }
     return app
   })().catch(err => {

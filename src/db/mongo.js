@@ -64,6 +64,44 @@ export async function persistRawIssues(issues = []) {
   await db.collection('raw_issues').bulkWrite(ops, { ordered: false }).catch(err => log.warn('raw upsert:', err.message))
 }
 
+/**
+ * Retrieve the most recent computed snapshot from MongoDB.
+ * Returns null if Mongo is disabled or nothing is stored yet.
+ */
+export async function getLatestSnapshot() {
+  if (!db) return null
+  try {
+    const sprint = await db.collection('sprint_snapshot')
+      .find().sort({ computedAt: -1 }).limit(1).next()
+    if (!sprint) return null
+
+    const teams = await db.collection('team_snapshots')
+      .find({ sprintNumber: sprint.sprintNumber }).sort({ computedAt: -1 }).toArray()
+
+    const initiatives = await db.collection('initiatives').find({}).toArray()
+
+    if (!teams.length) return null
+
+    // Reconstruct a shape close enough for setSnapshot — a full re-build
+    // happens on the next /api/ingest; this just keeps the dashboard live.
+    return {
+      source: sprint.source || 'jira',
+      generatedAt: sprint.computedAt?.toISOString() ?? new Date().toISOString(),
+      sprint,
+      teams,
+      initiatives: initiatives.map(({ _id, computedAt: _ct, ...rest }) => rest),
+      infraBlockers: [],
+      ceremonies: [],
+      lifecycle: [],
+      ticker: [],
+      hash: sprint.hash,
+    }
+  } catch (err) {
+    log.warn('mongo: getLatestSnapshot failed:', err.message)
+    return null
+  }
+}
+
 export async function closeMongo() {
   if (client) await client.close().catch(() => {})
 }
