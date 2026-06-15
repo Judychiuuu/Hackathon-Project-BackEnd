@@ -3,6 +3,7 @@ import express from 'express'
 import cors from 'cors'
 import { config } from './config.js'
 import { log } from './lib/log.js'
+import { mongoStatus } from './db/mongo.js'
 
 export function createServer({ onManualIngest }) {
   const app = express()
@@ -32,7 +33,8 @@ export function createServer({ onManualIngest }) {
 
   // ── Routes ──
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, source: snapshot?.source ?? config.dataSource, lastIngestAt, hash: snapshot?.hash ?? null, clients: clients.size })
+    const ms = mongoStatus()
+    res.json({ ok: true, source: snapshot?.source ?? config.dataSource, lastIngestAt, hash: snapshot?.hash ?? null, clients: clients.size, mongo: ms })
   })
 
 
