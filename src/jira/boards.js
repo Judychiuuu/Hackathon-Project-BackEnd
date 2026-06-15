@@ -65,7 +65,7 @@ export const BOARDS = [
   },
   {
     id: 'analytics',
-    boardKey: 'ANA',
+    boardKey: 'AK',
     name: 'Analytics',
     shortName: 'ANA',
     board: 'MS Fabric · ExploreLMS',
