@@ -4,7 +4,7 @@
 import { config } from '../config.js'
 import { log } from '../lib/log.js'
 import { searchAll, resolveCustomFields } from './client.js'
-import { allIssues, activeEpics } from './jql.js'
+import { allIssues, activeEpics, epicChildren } from './jql.js'
 import { BOARDS, ALL_CROSS_LABELS } from './boards.js'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -48,15 +48,6 @@ function getBlockedBy(issue) {
 function projectPrefix(key = '') {
   const m = String(key).match(/^([A-Z]+)-/)
   return m ? m[1] : ''
-}
-
-function getEpicKey(issue, epicLinkField) {
-  // Next-gen projects: parent IS the epic
-  const parentKey = issue.fields.parent?.key
-  if (parentKey) return parentKey
-  // Classic projects: custom epicLink field
-  if (epicLinkField && issue.fields[epicLinkField]) return issue.fields[epicLinkField]
-  return null
 }
 
 function mapStatus(statusName = '') {
@@ -167,12 +158,14 @@ function buildTeam(board, issues, flaggedField) {
 
 // ─── epic initiative builder ──────────────────────────────────────────────────
 
-function buildEpics(epicResults, allIssuesByBoard, epicLinkField, flaggedField) {
-  // Index all fetched issues by their parent/epicLink key
+function buildEpics(epicResults, childResults, flaggedField) {
+  // Index EVERY epic child (all-time, from the dedicated epicChildren query) by
+  // its parent epic key. parent.key is guaranteed to be an epic here because the
+  // query filtered `parent in (epicKeys)` — so counts map to the right initiative.
   const childrenByEpic = {}
-  for (const { issues } of allIssuesByBoard) {
-    for (const issue of issues) {
-      const epicKey = getEpicKey(issue, epicLinkField)
+  for (const { children } of childResults) {
+    for (const issue of children) {
+      const epicKey = issue.fields.parent?.key
       if (!epicKey) continue
       if (!childrenByEpic[epicKey]) childrenByEpic[epicKey] = []
       childrenByEpic[epicKey].push(issue)
@@ -183,7 +176,7 @@ function buildEpics(epicResults, allIssuesByBoard, epicLinkField, flaggedField) 
   for (const { boardId, epicIssues } of epicResults) {
     for (const epic of epicIssues) {
       const children = childrenByEpic[epic.key] || []
-      if (!children.length) continue  // no known children in the 28d window → skip
+      if (!children.length) continue  // epic with no children → skip
 
       const doneChildren    = children.filter(i => isDone(i)).length
       const blockedChildren = children.filter(i =>
@@ -207,7 +200,7 @@ function buildEpics(epicResults, allIssuesByBoard, epicLinkField, flaggedField) 
 // ─── main export ─────────────────────────────────────────────────────────────
 
 export async function getJiraIngest() {
-  const { epicLink: epicLinkField, flagged: flaggedField } = await resolveCustomFields()
+  const { flagged: flaggedField } = await resolveCustomFields()
 
   // Filter boards to those enabled in config
   const boards = BOARDS.filter(b => config.jira.boards.includes(b.boardKey))
@@ -223,17 +216,21 @@ export async function getJiraIngest() {
     })),
     Promise.all(boards.map(async board => {
       const epicIssues = await searchAll(activeEpics(board.boardKey))
-      return { boardId: board.id, epicIssues }
+      return { boardId: board.id, board, epicIssues }
     })),
   ])
 
+  // Now fetch EVERY child of those epics (no date filter) for accurate progress.
+  const childResults = await Promise.all(epicResults.map(async ({ boardId, board, epicIssues }) => {
+    const epicKeys = epicIssues.map(e => e.key)
+    if (!epicKeys.length) return { boardId, children: [] }
+    const children = await searchAll(epicChildren(board.boardKey, epicKeys))
+    log.info(`jira: ${board.boardKey} → ${epicKeys.length} epics, ${children.length} epic children`)
+    return { boardId, children }
+  }))
+
   const teams = issueResults.map(({ board, issues }) => buildTeam(board, issues, flaggedField))
-  const epics = buildEpics(
-    epicResults,
-    issueResults.map(r => ({ issues: r.issues })),
-    epicLinkField,
-    flaggedField,
-  )
+  const epics = buildEpics(epicResults, childResults, flaggedField)
 
   log.info(`jira: done — ${teams.length} teams, ${epics.length} initiatives`)
 
