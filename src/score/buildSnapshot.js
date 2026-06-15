@@ -68,11 +68,13 @@ export function buildSnapshot(ingest) {
       color: healthColor(health), hexColor: t.hexColor,
       health, healthScore: score, healthBreakdown: breakdown,
       shipped: t.shipped, inFlight: t.inFlight, stalled: t.stalled,
+      backlog: t.backlog ?? 0,
       effortScore, effortLabel,
       queueDepth, cycleTime,
       standup: t.standup, sprintPlanning: t.sprintPlanning,
       blockers,
       inFlightTickets: t.inFlightTickets || [],
+      backlogTickets: t.backlogTickets || [],
       shippedTickets: t.shippedTickets || [],
       // infra-only extras for its special card
       ...(isInfra ? { teamsWaiting: new Set(infraBlockers.map(b => b.teamId)).size, openTickets: t.inFlight } : {}),

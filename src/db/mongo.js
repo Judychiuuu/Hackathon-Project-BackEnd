@@ -7,6 +7,8 @@ import { log } from '../lib/log.js'
 let client = null
 let db = null
 
+export const mongoStatus = () => ({ enabled: config.mongo.enabled, connected: Boolean(db) })
+
 export async function connectMongo() {
   if (!config.mongo.enabled) {
     log.info('mongo: disabled (no MONGO_URI) — running in-memory')
@@ -14,7 +16,7 @@ export async function connectMongo() {
   }
   try {
     const { MongoClient } = await import('mongodb')
-    client = new MongoClient(config.mongo.uri, { serverSelectionTimeoutMS: 6000 })
+    client = new MongoClient(config.mongo.uri, { serverSelectionTimeoutMS: 15000 })
     await client.connect()
     db = client.db(config.mongo.db)
     await ensureIndexes(db)

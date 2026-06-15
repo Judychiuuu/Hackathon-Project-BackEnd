@@ -43,16 +43,17 @@ export async function resolveCustomFields() {
   if (_customFields) return _customFields
 
   const { data } = await getClient().get('/rest/api/3/field')
-  let storyPoints = null, epicLink = null
+  let storyPoints = null, epicLink = null, flagged = null
 
   for (const f of data) {
     const n = (f.name || '').toLowerCase()
     if (!storyPoints && /^story points?$|^sp$|^story point estimate$/.test(n)) storyPoints = f.id
     if (!epicLink   && /^epic link$|^epic name$/.test(n))                        epicLink   = f.id
+    if (!flagged    && /^flagged$|^impediment$/.test(n))                         flagged    = f.id
   }
 
-  _customFields = { storyPoints, epicLink }
-  log.info(`jira fields resolved: storyPoints=${storyPoints} epicLink=${epicLink}`)
+  _customFields = { storyPoints, epicLink, flagged }
+  log.info(`jira fields resolved: storyPoints=${storyPoints} epicLink=${epicLink} flagged=${flagged}`)
   return _customFields
 }
 
@@ -69,6 +70,7 @@ export async function searchAll(jql) {
     'issuetype', 'parent', 'priority', 'resolutiondate', 'issuelinks',
     ...(customFields.storyPoints ? [customFields.storyPoints] : []),
     ...(customFields.epicLink    ? [customFields.epicLink]    : []),
+    ...(customFields.flagged     ? [customFields.flagged]     : []),
   ]
 
   const all = []

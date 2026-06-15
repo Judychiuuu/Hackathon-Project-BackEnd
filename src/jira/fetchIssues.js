@@ -4,7 +4,7 @@
 import { config } from '../config.js'
 import { log } from '../lib/log.js'
 import { searchAll, resolveCustomFields } from './client.js'
-import { allIssues, activeEpics } from './jql.js'
+import { allIssues, activeEpics, epicChildren } from './jql.js'
 import { BOARDS, ALL_CROSS_LABELS } from './boards.js'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -22,43 +22,32 @@ function isDone(issue) {
   return issue.fields.status?.statusCategory?.key === 'done'
 }
 
-function hasCrossLabel(issue, labels) {
-  const issueLabels = issue.fields.labels || []
-  return labels.some(l => issueLabels.includes(l))
+// Impediment flag (Jira "Flagged" custom field) is set → real blocker signal.
+function isFlagged(issue, flaggedField) {
+  return Boolean(flaggedField && Array.isArray(issue.fields[flaggedField]) && issue.fields[flaggedField].length)
 }
 
-function hasAnyCrossLabel(issue) {
-  return (issue.fields.labels || []).some(l => ALL_CROSS_LABELS.includes(l))
-}
-
-function isBlockedStatus(issue) {
-  return /^(blocked|on hold)$/i.test(issue.fields.status?.name || '')
-}
-
-function getInfraLink(issue) {
+// Returns the active "is blocked by" link, if any. A ticket is genuinely blocked
+// only when the blocking issue is NOT already Done. issuelinks include the linked
+// issue's status, so we filter resolved blockers out here.
+function getBlockedBy(issue) {
   for (const link of issue.fields.issuelinks || []) {
-    if (link.inwardIssue?.key?.startsWith('INFRA-'))  return link.inwardIssue.key
-    if (link.outwardIssue?.key?.startsWith('INFRA-')) return link.outwardIssue.key
+    const inward = link.type?.inward || ''
+    // "is blocked by" (Blocks link type, inward direction)
+    if (/blocked by/i.test(inward) && link.inwardIssue) {
+      const blockerDone = link.inwardIssue.fields?.status?.statusCategory?.key === 'done'
+      if (!blockerDone) {
+        return { key: link.inwardIssue.key, summary: link.inwardIssue.fields?.summary || '' }
+      }
+    }
   }
   return null
 }
 
-function getCrossLabel(issue, boardCrossLabels) {
-  const labels = issue.fields.labels || []
-  return (
-    labels.find(l => boardCrossLabels.includes(l)) ||
-    labels.find(l => ALL_CROSS_LABELS.includes(l)) ||
-    null
-  )
-}
-
-function getEpicKey(issue, epicLinkField) {
-  // Next-gen projects: parent IS the epic
-  const parentKey = issue.fields.parent?.key
-  if (parentKey) return parentKey
-  // Classic projects: custom epicLink field
-  if (epicLinkField && issue.fields[epicLinkField]) return issue.fields[epicLinkField]
-  return null
+// Project prefix of a Jira key (LO-2041 → LO) — used as the blocker "label".
+function projectPrefix(key = '') {
+  const m = String(key).match(/^([A-Z]+)-/)
+  return m ? m[1] : ''
 }
 
 function mapStatus(statusName = '') {
@@ -81,62 +70,84 @@ function mapStatus(statusName = '') {
 const CUTOFF_14D = () => Date.now() - 14 * 86_400_000
 const CUTOFF_28D = () => Date.now() - 28 * 86_400_000
 
-function buildTeam(board, issues) {
+// Jira statusCategory: 'done' = shipped, 'new' = backlog (not started),
+// 'indeterminate' = active/in-flight. Health scoring runs on ACTIVE only —
+// a 200-ticket backlog of "Ready for Analysis" must not tank the score.
+function statusCategory(issue) {
+  return issue.fields.status?.statusCategory?.key || 'indeterminate'
+}
+
+function buildTeam(board, issues, flaggedField) {
   const cut14 = CUTOFF_14D(), cut28 = CUTOFF_28D()
   const { boardKey, crossTeamLabels, ...staticMeta } = board
 
-  const shippedIssues = [], prevIssues = [], inflightIssues = []
+  const shippedIssues = [], prevIssues = [], activeIssues = [], backlogIssues = []
 
   for (const issue of issues) {
-    if (isDone(issue)) {
+    const cat = statusCategory(issue)
+    if (cat === 'done') {
       const resolvedMs = issue.fields.resolutiondate
         ? new Date(issue.fields.resolutiondate).getTime() : 0
       if (resolvedMs >= cut14)       shippedIssues.push(issue)
       else if (resolvedMs >= cut28)  prevIssues.push(issue)
       // older than 28d → ignore
+    } else if (cat === 'new') {
+      backlogIssues.push(issue)       // not started — backlog
     } else {
-      inflightIssues.push(issue)
+      activeIssues.push(issue)        // indeterminate — genuinely in flight
     }
   }
 
+  // Blockers + stalled are computed over ACTIVE work only (backlog isn't "stuck",
+  // it just hasn't started). A flagged backlog item is surfaced separately below.
   const blockers = []
+  const blockedKeys = new Set()
   let stalledCount = 0
 
-  for (const issue of inflightIssues) {
-    const crossLabel   = getCrossLabel(issue, crossTeamLabels)
-    const blocked      = isBlockedStatus(issue) || Boolean(crossLabel)
+  for (const issue of activeIssues) {
+    const flagged      = isFlagged(issue, flaggedField)
+    const blockedBy    = getBlockedBy(issue)
+    const blocked      = flagged || Boolean(blockedBy)
     const updatedHours = hoursAgo(issue.fields.updated)
     const stalled      = blocked || updatedHours >= STALL_HOURS
 
     if (stalled) stalledCount++
 
     if (blocked) {
+      blockedKeys.add(issue.key)
       blockers.push({
         ticketId:    issue.key,
-        infraTicket: getInfraLink(issue),
+        infraTicket: blockedBy?.key || (flagged ? '🚩 Flagged' : '—'),
         assignee:    issue.fields.assignee?.displayName || 'Unassigned',
         age:         updatedHours,
-        label:       crossLabel || 'blocked',
+        label:       blockedBy ? projectPrefix(blockedBy.key) : 'FLAG',
         description: issue.fields.summary,
         escalate:    updatedHours >= BREACH_HOURS,
       })
     }
   }
 
+  // Sort blockers oldest-first (most urgent at top).
+  blockers.sort((a, b) => b.age - a.age)
+
+  const ticketRow = (i) => ({
+    id:      i.key,
+    title:   i.fields.summary,
+    stage:   mapStatus(i.fields.status?.name),
+    days:    daysAgo(i.fields.updated),
+    blocked: blockedKeys.has(i.key),
+  })
+
   return {
     ...staticMeta,
-    shipped:    shippedIssues.length,
+    shipped:     shippedIssues.length,
     shippedPrev: prevIssues.length,
-    inFlight:   inflightIssues.length,
-    stalled:    stalledCount,
+    inFlight:    activeIssues.length,
+    backlog:     backlogIssues.length,
+    stalled:     stalledCount,
     blockers,
-    inFlightTickets: inflightIssues.map(i => ({
-      id:      i.key,
-      title:   i.fields.summary,
-      stage:   mapStatus(i.fields.status?.name),
-      days:    daysAgo(i.fields.updated),
-      blocked: isBlockedStatus(i) || hasCrossLabel(i, crossTeamLabels),
-    })),
+    inFlightTickets: activeIssues.map(ticketRow),
+    backlogTickets:  backlogIssues.map(ticketRow),
     shippedTickets: shippedIssues.slice(0, 12).map(i => ({
       id:    i.key,
       title: i.fields.summary,
@@ -147,12 +158,14 @@ function buildTeam(board, issues) {
 
 // ─── epic initiative builder ──────────────────────────────────────────────────
 
-function buildEpics(epicResults, allIssuesByBoard, epicLinkField) {
-  // Index all fetched issues by their parent/epicLink key
+function buildEpics(epicResults, childResults, flaggedField) {
+  // Index EVERY epic child (all-time, from the dedicated epicChildren query) by
+  // its parent epic key. parent.key is guaranteed to be an epic here because the
+  // query filtered `parent in (epicKeys)` — so counts map to the right initiative.
   const childrenByEpic = {}
-  for (const { issues } of allIssuesByBoard) {
-    for (const issue of issues) {
-      const epicKey = getEpicKey(issue, epicLinkField)
+  for (const { children } of childResults) {
+    for (const issue of children) {
+      const epicKey = issue.fields.parent?.key
       if (!epicKey) continue
       if (!childrenByEpic[epicKey]) childrenByEpic[epicKey] = []
       childrenByEpic[epicKey].push(issue)
@@ -163,11 +176,11 @@ function buildEpics(epicResults, allIssuesByBoard, epicLinkField) {
   for (const { boardId, epicIssues } of epicResults) {
     for (const epic of epicIssues) {
       const children = childrenByEpic[epic.key] || []
-      if (!children.length) continue  // no known children in the 28d window → skip
+      if (!children.length) continue  // epic with no children → skip
 
       const doneChildren    = children.filter(i => isDone(i)).length
       const blockedChildren = children.filter(i =>
-        isBlockedStatus(i) || hasAnyCrossLabel(i)
+        !isDone(i) && (isFlagged(i, flaggedField) || getBlockedBy(i))
       ).length
 
       epics.push({
@@ -187,7 +200,7 @@ function buildEpics(epicResults, allIssuesByBoard, epicLinkField) {
 // ─── main export ─────────────────────────────────────────────────────────────
 
 export async function getJiraIngest() {
-  const { epicLink: epicLinkField } = await resolveCustomFields()
+  const { flagged: flaggedField } = await resolveCustomFields()
 
   // Filter boards to those enabled in config
   const boards = BOARDS.filter(b => config.jira.boards.includes(b.boardKey))
@@ -203,16 +216,21 @@ export async function getJiraIngest() {
     })),
     Promise.all(boards.map(async board => {
       const epicIssues = await searchAll(activeEpics(board.boardKey))
-      return { boardId: board.id, epicIssues }
+      return { boardId: board.id, board, epicIssues }
     })),
   ])
 
-  const teams = issueResults.map(({ board, issues }) => buildTeam(board, issues))
-  const epics = buildEpics(
-    epicResults,
-    issueResults.map(r => ({ issues: r.issues })),
-    epicLinkField,
-  )
+  // Now fetch EVERY child of those epics (no date filter) for accurate progress.
+  const childResults = await Promise.all(epicResults.map(async ({ boardId, board, epicIssues }) => {
+    const epicKeys = epicIssues.map(e => e.key)
+    if (!epicKeys.length) return { boardId, children: [] }
+    const children = await searchAll(epicChildren(board.boardKey, epicKeys))
+    log.info(`jira: ${board.boardKey} → ${epicKeys.length} epics, ${children.length} epic children`)
+    return { boardId, children }
+  }))
+
+  const teams = issueResults.map(({ board, issues }) => buildTeam(board, issues, flaggedField))
+  const epics = buildEpics(epicResults, childResults, flaggedField)
 
   log.info(`jira: done — ${teams.length} teams, ${epics.length} initiatives`)
 

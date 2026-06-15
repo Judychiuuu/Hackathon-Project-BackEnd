@@ -3,6 +3,7 @@ import express from 'express'
 import cors from 'cors'
 import { config } from './config.js'
 import { log } from './lib/log.js'
+import { mongoStatus } from './db/mongo.js'
 
 export function createServer({ onManualIngest }) {
   const app = express()
@@ -32,7 +33,8 @@ export function createServer({ onManualIngest }) {
 
   // ── Routes ──
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, source: snapshot?.source ?? config.dataSource, lastIngestAt, hash: snapshot?.hash ?? null, clients: clients.size })
+    const ms = mongoStatus()
+    res.json({ ok: true, source: snapshot?.source ?? config.dataSource, lastIngestAt, hash: snapshot?.hash ?? null, clients: clients.size, mongo: ms })
   })
 
 
@@ -47,10 +49,12 @@ export function createServer({ onManualIngest }) {
     res.json(team)
   })
 
-  app.post('/api/ingest', async (_req, res) => {
+  // Force a fresh ingest. ?full=1 returns the whole computed snapshot (used to
+  // re-freeze data/seed.json); otherwise just an ack.
+  app.post('/api/ingest', async (req, res) => {
     try {
       const snap = await onManualIngest()
-      res.json({ ok: true, hash: snap.hash, source: snap.source })
+      res.json(req.query.full ? snap : { ok: true, hash: snap.hash, source: snap.source })
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message })
     }

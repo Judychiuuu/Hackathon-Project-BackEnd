@@ -19,3 +19,13 @@ export function activeEpics(boardKey) {
     `statusCategory != Done ORDER BY updated DESC`
   )
 }
+
+/**
+ * ALL direct children of the given epics — no date filter. Needed for accurate
+ * initiative progress: done children older than 28d must still count, otherwise
+ * a mostly-finished epic reads as 0%. `parent in (...)` ties each child to its
+ * epic precisely, so counts land on the right initiative.
+ */
+export function epicChildren(boardKey, epicKeys) {
+  return `project = ${boardKey} AND parent in (${epicKeys.join(',')}) ORDER BY updated DESC`
+}
